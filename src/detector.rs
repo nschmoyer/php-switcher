@@ -403,4 +403,97 @@ mod tests {
         installation.add_path(PathBuf::from("/usr/bin/php-cgi"));
         assert_eq!(installation.paths.len(), 2);
     }
+
+    // Tool scanning integration tests
+    #[test]
+    fn test_find_all_php_tools_disabled() {
+        use crate::config::Config;
+
+        let config = Config::default();
+
+        // By default, scan_for_tools should be false
+        assert!(!config.tools.scan_for_tools);
+
+        // When disabled, should return empty vec and not scan
+        let tools = find_all_php_tools(&config.tools);
+
+        // Should succeed but return empty
+        assert!(tools.is_ok());
+        assert!(tools.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_find_all_php_tools_enabled() {
+        use crate::config::ToolsConfig;
+        use tempfile::TempDir;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create a fake composer tool
+        let composer_path = bin_dir.join("composer");
+        fs::write(&composer_path, "#!/usr/bin/php\n<?php\necho 'composer';").unwrap();
+        fs::set_permissions(&composer_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut tools_config = ToolsConfig::default();
+        tools_config.scan_for_tools = true;
+        tools_config.custom_search_paths = vec![bin_dir];
+
+        let tools = find_all_php_tools(&tools_config);
+
+        assert!(tools.is_ok());
+        let tools = tools.unwrap();
+
+        // Should find composer
+        assert!(tools.iter().any(|t| t.name == "composer"));
+    }
+
+    #[test]
+    fn test_find_all_php_tools_custom_paths() {
+        use crate::config::ToolsConfig;
+        use tempfile::TempDir;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let custom_bin = temp_dir.path().join("custom");
+        fs::create_dir_all(&custom_bin).unwrap();
+
+        // Create a custom tool
+        let my_tool = custom_bin.join("my-php-tool");
+        fs::write(&my_tool, "#!/usr/bin/php\n<?php\necho 'test';").unwrap();
+        fs::set_permissions(&my_tool, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut tools_config = ToolsConfig::default();
+        tools_config.scan_for_tools = true;
+        tools_config.custom_tool_names = vec!["my-php-tool".to_string()];
+        tools_config.custom_search_paths = vec![custom_bin];
+
+        let tools = find_all_php_tools(&tools_config);
+
+        assert!(tools.is_ok());
+        let tools = tools.unwrap();
+
+        // Should find the custom tool
+        assert!(tools.iter().any(|t| t.name == "my-php-tool"));
+    }
+}
+
+/// Find all PHP tools on the system based on tools configuration
+pub fn find_all_php_tools(tools_config: &crate::config::ToolsConfig) -> Result<Vec<crate::tools::PhpTool>> {
+    use crate::tools;
+
+    // If scanning is disabled, return empty list
+    if !tools_config.scan_for_tools {
+        return Ok(Vec::new());
+    }
+
+    // Use the tools module to scan for PHP tools
+    tools::scan_for_php_tools(
+        &tools_config.custom_tool_names,
+        &tools_config.custom_search_paths,
+    )
 }

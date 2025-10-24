@@ -75,7 +75,34 @@ php-switcher info
 php-switcher info 8.2
 ```
 
-## How It Works
+### PHP Tool Management
+
+**Problem**: Tools like `composer` often have hardcoded shebangs like `#!/usr/bin/php`, which bypass your PATH and ignore php-switcher.
+
+**Solution**: php-switcher can automatically detect these tools and create shims that use the switched PHP version.
+
+```bash
+# Enable tool scanning (opt-in)
+php-switcher tools enable
+
+# Scan for PHP tools (composer, phpunit, etc.)
+php-switcher tools scan
+
+# List detected tools and their status
+php-switcher tools list
+
+# Disable tool scanning
+php-switcher tools disable
+```
+
+**How it works**:
+1. Scans your PATH for common PHP tools (composer, phpunit, psalm, phpstan, rector, etc.)
+2. Checks each tool's shebang line
+3. For tools with `#!/usr/bin/php` (hardcoded), creates a shim in `~/.php-switcher/bin/`
+4. Skips tools with `#!/usr/bin/env php` (already PATH-aware)
+5. Shims automatically use the currently switched PHP version
+
+## Behind the Scenes
 
 1. **Detection**: php-switcher scans common locations for PHP binaries:
    - `/usr/bin`, `/usr/local/bin` (system installations)

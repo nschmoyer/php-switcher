@@ -82,9 +82,50 @@ pub fn switch_version(version_pattern: &str) -> Result<()> {
     // Verify the switch using the primary binary
     verify_switch(&bin_dir)?;
 
+    // Create shims for PHP tools if scanning is enabled
+    let shim_count = if config.tools.scan_for_tools && !config.tools.managed.is_empty() {
+        println!("\n{}", "Creating tool shims...".dimmed());
+
+        let tools: Vec<crate::tools::PhpTool> = config.tools.managed.iter().map(|entry| {
+            crate::tools::PhpTool {
+                name: entry.name.clone(),
+                original_path: entry.original_path.clone(),
+                shebang: entry.shebang.clone(),
+            }
+        }).collect();
+
+        let count = create_shims_for_tools(&tools, &bin_dir)?;
+
+        if count > 0 {
+            for tool in &tools {
+                if crate::tools::needs_shim(&tool.shebang) {
+                    println!("  {} {} → uses switched PHP", "✓".green(), tool.name.dimmed());
+                }
+            }
+        }
+
+        // Update config to mark shims as created
+        for entry in &mut config.tools.managed {
+            entry.shim_created = crate::tools::needs_shim(&entry.shebang);
+        }
+        config::save_config(&config)?;
+
+        count
+    } else {
+        0
+    };
+
     // Show success message
     println!("\n{}", "PHP version switched successfully!".green().bold());
-    println!("  {} symlinks created", symlink_count);
+    println!("  {} PHP symlinks created", symlink_count);
+    if shim_count > 0 {
+        println!("  {} tool shims created", shim_count);
+    } else if !config.tools.scan_for_tools {
+        let tip = "💡 Tip: Enable tool scanning to auto-shim composer, phpunit, etc.";
+        let cmd = "   Run: php-switcher tools enable && php-switcher tools scan";
+        println!("\n{}", tip.dimmed());
+        println!("{}", cmd.dimmed());
+    }
 
     show_path_instructions(&bin_dir);
 
@@ -295,4 +336,116 @@ mod tests {
         let result = verify_switch(&bin_dir);
         assert!(result.is_ok());
     }
+
+    // Tool shim creation tests
+    #[test]
+    fn test_create_shims_for_tools() {
+        use crate::tools::PhpTool;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+
+        let tools = vec![
+            PhpTool {
+                name: "composer".to_string(),
+                original_path: PathBuf::from("/usr/bin/composer"),
+                shebang: "#!/usr/bin/php".to_string(),
+            },
+            PhpTool {
+                name: "phpunit".to_string(),
+                original_path: PathBuf::from("/usr/bin/phpunit"),
+                shebang: "#!/usr/bin/php".to_string(),
+            },
+        ];
+
+        let result = create_shims_for_tools(&tools, &bin_dir);
+
+        assert!(result.is_ok());
+        let created = result.unwrap();
+
+        // Should have created 2 shims
+        assert_eq!(created, 2);
+
+        // Verify shims exist
+        assert!(bin_dir.join("composer").exists());
+        assert!(bin_dir.join("phpunit").exists());
+    }
+
+    #[test]
+    fn test_skip_shim_for_env_tools() {
+        use crate::tools::PhpTool;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+
+        let tools = vec![
+            PhpTool {
+                name: "phpunit".to_string(),
+                original_path: PathBuf::from("/usr/bin/phpunit"),
+                shebang: "#!/usr/bin/env php".to_string(), // Uses env - no shim needed
+            },
+        ];
+
+        let result = create_shims_for_tools(&tools, &bin_dir);
+
+        assert!(result.is_ok());
+        let created = result.unwrap();
+
+        // Should not create shim for tools with env shebang
+        assert_eq!(created, 0);
+        assert!(!bin_dir.join("phpunit").exists());
+    }
+
+    #[test]
+    fn test_update_shims_on_rescan() {
+        use crate::tools::PhpTool;
+        use std::fs;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let bin_dir = temp_dir.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        // Create an old shim
+        fs::write(bin_dir.join("composer"), "#!/bin/bash\necho 'old shim'").unwrap();
+
+        let tools = vec![
+            PhpTool {
+                name: "composer".to_string(),
+                original_path: PathBuf::from("/usr/bin/composer"),
+                shebang: "#!/usr/bin/php".to_string(),
+            },
+        ];
+
+        let result = create_shims_for_tools(&tools, &bin_dir);
+
+        assert!(result.is_ok());
+
+        // Verify shim was updated (should contain new content)
+        let content = fs::read_to_string(bin_dir.join("composer")).unwrap();
+        assert!(content.contains(".php-switcher/bin/php"));
+        assert!(!content.contains("old shim"));
+    }
+}
+
+/// Create shims for PHP tools that need them
+pub fn create_shims_for_tools<P: AsRef<Path>>(tools: &[crate::tools::PhpTool], bin_dir: P) -> Result<usize> {
+    use crate::tools;
+
+    let mut created = 0;
+
+    for tool in tools {
+        // Only create shims for tools with hardcoded PHP paths
+        if tools::needs_shim(&tool.shebang) {
+            tools::create_shim(tool, bin_dir.as_ref())?;
+            created += 1;
+        }
+    }
+
+    Ok(created)
 }

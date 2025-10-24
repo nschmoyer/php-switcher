@@ -88,12 +88,22 @@ fn list_versions() -> Result<()> {
             .map(|c| c.version.to_string() == entry.version)
             .unwrap_or(false);
 
+        // Get the primary path (prefer 'php' binary)
+        let primary_path = entry
+            .paths
+            .iter()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("php"))
+            .or_else(|| entry.paths.first());
+
         if is_current {
             println!(
                 "  {} {}  {}  {}",
                 "●".green(),
                 entry.version.green().bold(),
-                entry.path.display().to_string().dimmed(),
+                primary_path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+                    .dimmed(),
                 "[ACTIVE]".green().bold()
             );
         } else {
@@ -101,8 +111,29 @@ fn list_versions() -> Result<()> {
                 "  {} {}  {}",
                 "○".dimmed(),
                 entry.version,
-                entry.path.display().to_string().dimmed()
+                primary_path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+                    .dimmed()
             );
+        }
+
+        // Show related binaries if more than just 'php'
+        if entry.paths.len() > 1 {
+            let related: Vec<String> = entry
+                .paths
+                .iter()
+                .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("php"))
+                .filter_map(|p| p.file_name()?.to_str().map(String::from))
+                .collect();
+
+            if !related.is_empty() {
+                println!(
+                    "      {} {}",
+                    "Related:".dimmed(),
+                    related.join(", ").dimmed()
+                );
+            }
         }
     }
 
@@ -117,8 +148,8 @@ fn switch_version(version_pattern: &str) -> Result<()> {
     // Load config
     let config = config::load_config()?;
 
-    // Find matching version
-    let path = config
+    // Find matching version (returns all paths)
+    let paths = config
         .get_installation_by_version(version_pattern)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -127,39 +158,63 @@ fn switch_version(version_pattern: &str) -> Result<()> {
             )
         })?;
 
-    println!("{} Found PHP at: {}", "✓".green(), path.display());
+    if paths.is_empty() {
+        return Err(anyhow::anyhow!("No PHP binaries found for version {}", version_pattern));
+    }
+
+    // Get primary path for verification
+    let primary_path = paths
+        .iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("php"))
+        .or_else(|| paths.first())
+        .ok_or_else(|| anyhow::anyhow!("No primary PHP binary found"))?;
+
+    println!("{} Found PHP at: {}", "✓".green(), primary_path.display());
+    println!("  {} related binaries to symlink", paths.len());
 
     // Create symlink directory
     let switcher_dir = config::get_config_dir()?;
     let bin_dir = switcher_dir.join("bin");
     std::fs::create_dir_all(&bin_dir)?;
 
-    let symlink_path = bin_dir.join("php");
+    // Create symlinks for all related binaries
+    let mut symlink_count = 0;
+    for path in &paths {
+        if let Some(filename) = path.file_name() {
+            let symlink_path = bin_dir.join(filename);
 
-    // Remove existing symlink if it exists
-    if symlink_path.exists() {
-        std::fs::remove_file(&symlink_path)?;
+            // Remove existing symlink if it exists
+            if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
+                std::fs::remove_file(&symlink_path).ok(); // Ignore errors
+            }
+
+            // Create symlink
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(path, &symlink_path)?;
+            }
+
+            symlink_count += 1;
+            println!(
+                "  {} {} → {}",
+                "✓".green(),
+                filename.to_string_lossy().dimmed(),
+                path.display().to_string().dimmed()
+            );
+        }
     }
 
-    // Create symlink
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(&path, &symlink_path)?;
-    }
-
-    println!(
-        "{} Updated symlink: {} → {}",
-        "✓".green(),
-        symlink_path.display().to_string().dimmed(),
-        path.display()
-    );
-
-    // Verify the switch
-    if let Ok(version) = detector::get_version_from_binary(&symlink_path) {
-        println!("{} Verified: {}", "✓".green(), version.to_string().bold());
+    // Verify the switch using the primary binary
+    let primary_symlink = bin_dir.join("php");
+    if primary_symlink.exists() {
+        if let Ok(version) = detector::get_version_from_binary(&primary_symlink) {
+            println!("\n{} Verified: {}", "✓".green(), version.to_string().bold());
+        }
     }
 
     println!("\n{}", "PHP version switched successfully!".green().bold());
+    println!("  {} symlinks created", symlink_count);
+
     println!(
         "\n{}",
         format!(
@@ -191,11 +246,32 @@ fn scan_installations() -> Result<()> {
     );
 
     for installation in &installations {
+        // Get the primary path
+        let primary_path = installation.primary_path();
+
         println!(
             "  {} at {}",
             installation.version.to_string().bold(),
-            installation.path.display()
+            primary_path.map(|p| p.display().to_string()).unwrap_or_default()
         );
+
+        // Show related binaries
+        if installation.paths.len() > 1 {
+            let related: Vec<String> = installation
+                .paths
+                .iter()
+                .filter(|p| Some(*p) != primary_path)
+                .filter_map(|p| p.file_name()?.to_str().map(String::from))
+                .collect();
+
+            if !related.is_empty() {
+                println!(
+                    "      {} {}",
+                    "Related:".dimmed(),
+                    related.join(", ").dimmed()
+                );
+            }
+        }
     }
 
     // Save to config
@@ -212,15 +288,27 @@ fn show_info(version: Option<&str>) -> Result<()> {
     if let Some(version_pattern) = version {
         // Show info for specific version
         let config = config::load_config()?;
-        let path = config
+        let paths = config
             .get_installation_by_version(version_pattern)
             .ok_or_else(|| anyhow::anyhow!("No PHP installation found matching '{}'", version_pattern))?;
 
-        if let Ok(version) = detector::get_version_from_binary(&path) {
+        let primary_path = config
+            .get_primary_path_by_version(version_pattern)
+            .ok_or_else(|| anyhow::anyhow!("No primary PHP binary found"))?;
+
+        if let Ok(version) = detector::get_version_from_binary(&primary_path) {
             println!("{}", "PHP Installation Info".bold());
             println!("  Version: {}", version.to_string().bold());
-            println!("  Path: {}", path.display());
             println!("  Short version: {}", version.short_version());
+            println!("  Primary path: {}", primary_path.display());
+
+            // Show all binaries
+            println!("\n  {} binaries:", paths.len());
+            for path in &paths {
+                if let Some(filename) = path.file_name() {
+                    println!("    - {} ({})", filename.to_string_lossy(), path.display());
+                }
+            }
         }
     } else {
         // Show general info

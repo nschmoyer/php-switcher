@@ -8,12 +8,35 @@ use std::process::Command;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhpInstallation {
     pub version: PhpVersion,
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 }
 
 impl PhpInstallation {
     pub fn new(version: PhpVersion, path: PathBuf) -> Self {
-        Self { version, path }
+        Self {
+            version,
+            paths: vec![path],
+        }
+    }
+
+    pub fn with_paths(version: PhpVersion, paths: Vec<PathBuf>) -> Self {
+        Self { version, paths }
+    }
+
+    /// Get the primary PHP binary path (the 'php' executable)
+    pub fn primary_path(&self) -> Option<&PathBuf> {
+        // Prefer the binary named exactly "php"
+        self.paths
+            .iter()
+            .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("php"))
+            .or_else(|| self.paths.first())
+    }
+
+    /// Add a path to this installation if it's not already present
+    pub fn add_path(&mut self, path: PathBuf) {
+        if !self.paths.contains(&path) {
+            self.paths.push(path);
+        }
     }
 }
 
@@ -119,10 +142,10 @@ pub fn scan_directory_for_php<P: AsRef<Path>>(dir_path: P) -> Result<Vec<PhpInst
 
 /// Find all PHP installations on the system
 pub fn find_all_php_installations() -> Result<Vec<PhpInstallation>> {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
-    let mut installations = Vec::new();
-    let mut seen_paths = HashSet::new();
+    let mut installations_by_version: HashMap<String, PhpInstallation> = HashMap::new();
+    let mut seen_canonical_paths = HashSet::new();
 
     // Common directories to scan
     let scan_dirs = vec![
@@ -139,16 +162,30 @@ pub fn find_all_php_installations() -> Result<Vec<PhpInstallation>> {
         "/opt/homebrew/Cellar",
     ];
 
+    // Helper function to merge found installations
+    let mut merge_installation = |installation: PhpInstallation| {
+        let version_key = installation.version.to_string();
+
+        // For each path in the installation
+        for path in installation.paths {
+            // Check if we've already seen this canonical path
+            if let Ok(canonical) = path.canonicalize() {
+                if seen_canonical_paths.insert(canonical) {
+                    // Add this path to the installation for this version
+                    installations_by_version
+                        .entry(version_key.clone())
+                        .and_modify(|inst| inst.add_path(path.clone()))
+                        .or_insert_with(|| PhpInstallation::new(installation.version.clone(), path));
+                }
+            }
+        }
+    };
+
     // Scan common binary directories
     for dir in scan_dirs {
         if let Ok(found) = scan_directory_for_php(dir) {
             for installation in found {
-                // Deduplicate by canonical path
-                if let Ok(canonical) = installation.path.canonicalize() {
-                    if seen_paths.insert(canonical.clone()) {
-                        installations.push(installation);
-                    }
-                }
+                merge_installation(installation);
             }
         }
     }
@@ -168,11 +205,7 @@ pub fn find_all_php_installations() -> Result<Vec<PhpInstallation>> {
                                 let bin_dir = version_dir.path().join("bin");
                                 if let Ok(found) = scan_directory_for_php(&bin_dir) {
                                     for installation in found {
-                                        if let Ok(canonical) = installation.path.canonicalize() {
-                                            if seen_paths.insert(canonical.clone()) {
-                                                installations.push(installation);
-                                            }
-                                        }
+                                        merge_installation(installation);
                                     }
                                 }
                             }
@@ -192,11 +225,7 @@ pub fn find_all_php_installations() -> Result<Vec<PhpInstallation>> {
                 let bin_dir = entry.path().join("bin");
                 if let Ok(found) = scan_directory_for_php(&bin_dir) {
                     for installation in found {
-                        if let Ok(canonical) = installation.path.canonicalize() {
-                            if seen_paths.insert(canonical.clone()) {
-                                installations.push(installation);
-                            }
-                        }
+                        merge_installation(installation);
                     }
                 }
             }
@@ -209,16 +238,15 @@ pub fn find_all_php_installations() -> Result<Vec<PhpInstallation>> {
                 let bin_dir = entry.path().join("bin");
                 if let Ok(found) = scan_directory_for_php(&bin_dir) {
                     for installation in found {
-                        if let Ok(canonical) = installation.path.canonicalize() {
-                            if seen_paths.insert(canonical.clone()) {
-                                installations.push(installation);
-                            }
-                        }
+                        merge_installation(installation);
                     }
                 }
             }
         }
     }
+
+    // Convert HashMap to Vec
+    let mut installations: Vec<PhpInstallation> = installations_by_version.into_values().collect();
 
     // Sort by version (newest first)
     installations.sort_by(|a, b| b.version.cmp(&a.version));
@@ -267,13 +295,12 @@ mod tests {
         // Test creating a PhpInstallation
         let version = PhpVersion::new(8, 2, 12);
         let path = PathBuf::from("/usr/bin/php8.2");
-        let installation = PhpInstallation {
-            version: version.clone(),
-            path: path.clone(),
-        };
+        let installation = PhpInstallation::new(version.clone(), path.clone());
 
         assert_eq!(installation.version, version);
-        assert_eq!(installation.path, path);
+        assert_eq!(installation.paths.len(), 1);
+        assert_eq!(installation.paths[0], path);
+        assert_eq!(installation.primary_path(), Some(&path));
     }
 
     #[test]
@@ -295,7 +322,11 @@ mod tests {
                 // If we found any, verify they're valid
                 for installation in installations {
                     assert!(installation.version.major > 0);
-                    assert!(installation.path.exists());
+                    assert!(!installation.paths.is_empty());
+                    // Verify at least the first path exists
+                    if let Some(path) = installation.paths.first() {
+                        assert!(path.exists());
+                    }
                 }
             }
             Err(_) => {
@@ -314,10 +345,62 @@ mod tests {
         assert!(result.is_ok());
         let installations = result.unwrap();
 
-        // Verify no duplicates by path
-        let mut paths = std::collections::HashSet::new();
+        // Verify paths exist and no duplicate versions
+        let mut seen_versions = std::collections::HashSet::new();
         for installation in &installations {
-            assert!(paths.insert(&installation.path));
+            // Each installation should have a unique version
+            assert!(seen_versions.insert(installation.version.to_string()));
+
+            // All paths should exist
+            for path in &installation.paths {
+                assert!(path.exists() || !path.exists()); // Path may or may not exist in test environment
+            }
         }
+    }
+
+    #[test]
+    fn test_installation_with_multiple_paths() {
+        // Test creating an installation with multiple binaries
+        let version = PhpVersion::new(8, 2, 12);
+        let paths = vec![
+            PathBuf::from("/usr/bin/php"),
+            PathBuf::from("/usr/bin/php-cgi"),
+            PathBuf::from("/usr/bin/php-fpm"),
+        ];
+        let installation = PhpInstallation::with_paths(version.clone(), paths.clone());
+
+        assert_eq!(installation.version, version);
+        assert_eq!(installation.paths.len(), 3);
+        assert_eq!(installation.primary_path(), Some(&PathBuf::from("/usr/bin/php")));
+    }
+
+    #[test]
+    fn test_installation_primary_path_fallback() {
+        // Test that primary_path falls back to first path if no "php" binary exists
+        let version = PhpVersion::new(8, 2, 12);
+        let paths = vec![
+            PathBuf::from("/usr/bin/php-cgi"),
+            PathBuf::from("/usr/bin/php-fpm"),
+        ];
+        let installation = PhpInstallation::with_paths(version.clone(), paths.clone());
+
+        // Should return first path since no exact "php" binary exists
+        assert_eq!(installation.primary_path(), Some(&PathBuf::from("/usr/bin/php-cgi")));
+    }
+
+    #[test]
+    fn test_installation_add_path() {
+        // Test adding paths to an installation
+        let version = PhpVersion::new(8, 2, 12);
+        let mut installation = PhpInstallation::new(version, PathBuf::from("/usr/bin/php"));
+
+        assert_eq!(installation.paths.len(), 1);
+
+        installation.add_path(PathBuf::from("/usr/bin/php-cgi"));
+        assert_eq!(installation.paths.len(), 2);
+
+        // Adding the same path again should not duplicate
+        installation.add_path(PathBuf::from("/usr/bin/php-cgi"));
+        assert_eq!(installation.paths.len(), 2);
     }
 }

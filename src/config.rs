@@ -20,7 +20,7 @@ pub struct Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersionEntry {
     pub version: String,
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
     pub source: String,
 }
 
@@ -49,7 +49,7 @@ impl Config {
         for installation in installations {
             self.versions.push(VersionEntry {
                 version: installation.version.to_string(),
-                path: installation.path.clone(),
+                paths: installation.paths.clone(),
                 source: "auto".to_string(),
             });
         }
@@ -58,18 +58,32 @@ impl Config {
         self.settings.last_scan = Some(chrono::Utc::now().to_rfc3339());
     }
 
-    pub fn get_installation_by_version(&self, version_pattern: &str) -> Option<PathBuf> {
+    /// Get all paths for a version matching the pattern
+    pub fn get_installation_by_version(&self, version_pattern: &str) -> Option<Vec<PathBuf>> {
         use crate::version::PhpVersion;
 
         for entry in &self.versions {
             if let Ok(version) = PhpVersion::from_php_output(&format!("PHP {}", entry.version)) {
                 if version.matches(version_pattern) {
-                    return Some(entry.path.clone());
+                    return Some(entry.paths.clone());
                 }
             }
         }
 
         None
+    }
+
+    /// Get the primary PHP binary path for a version matching the pattern
+    pub fn get_primary_path_by_version(&self, version_pattern: &str) -> Option<PathBuf> {
+        self.get_installation_by_version(version_pattern)
+            .and_then(|paths| {
+                // Prefer the binary named exactly "php"
+                paths
+                    .iter()
+                    .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("php"))
+                    .or_else(|| paths.first())
+                    .cloned()
+            })
     }
 }
 
@@ -155,7 +169,7 @@ mod tests {
         config.settings.default_version = Some("8.2".to_string());
         config.versions.push(VersionEntry {
             version: "8.2.12".to_string(),
-            path: PathBuf::from("/usr/bin/php8.2"),
+            paths: vec![PathBuf::from("/usr/bin/php8.2"), PathBuf::from("/usr/bin/php-cgi")],
             source: "auto".to_string(),
         });
 
@@ -188,7 +202,7 @@ mod tests {
         config.settings.default_version = Some("8.2".to_string());
         config.versions.push(VersionEntry {
             version: "8.2.12".to_string(),
-            path: PathBuf::from("/usr/bin/php8.2"),
+            paths: vec![PathBuf::from("/usr/bin/php8.2")],
             source: "auto".to_string(),
         });
 

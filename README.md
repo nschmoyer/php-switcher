@@ -15,7 +15,7 @@ A fast, simple CLI tool for switching between PHP versions on Linux and macOS.
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/php-switcher
+git clone https://github.com/nschmoyer/php-switcher
 cd php-switcher
 cargo build --release
 sudo cp target/release/php-switcher /usr/local/bin/
@@ -45,18 +45,6 @@ php-switcher
 php-switcher list
 ```
 
-Output:
-```
-Current PHP version: 8.4.13
-
-Available PHP versions:
-  ● 8.4.13  /usr/bin/php  [ACTIVE]
-  ○ 8.2.12  /usr/bin/php8.2
-  ○ 7.4.33  /usr/bin/php7.4
-
-Use 'php-switcher use <version>' to switch versions
-```
-
 ### Switch PHP Version
 
 ```bash
@@ -68,36 +56,11 @@ php-switcher 8.2  # Shorthand
 php-switcher use 8.2.12
 ```
 
-Output:
-```
-Switching to PHP 8.2...
-✓ Found PHP at: /usr/bin/php8.2
-✓ Updated symlink: /home/user/.php-switcher/bin/php → /usr/bin/php8.2
-✓ Verified: 8.2.12
-
-PHP version switched successfully!
-
-Add /home/user/.php-switcher/bin to your PATH to use the new version:
-  export PATH="/home/user/.php-switcher/bin:$PATH"
-```
-
 ### Scan for PHP Installations
 
 ```bash
 # Scan system for PHP installations
 php-switcher scan
-```
-
-Output:
-```
-Scanning for PHP installations...
-✓ Found 3 PHP installation(s)
-
-  8.4.13 at /usr/bin/php
-  8.2.12 at /usr/bin/php8.2
-  7.4.33 at /usr/bin/php7.4
-
-Configuration updated.
 ```
 
 ### Show Information
@@ -126,73 +89,4 @@ php-switcher info 8.2
 
 ## Supported Platforms
 
-- **Linux**: Tested on Fedora, Ubuntu, Debian
-- **macOS**: Tested on Intel and Apple Silicon
-
-## Development
-
-This project was built using Test-Driven Development (TDD) with Rust.
-
-### Run Tests
-
-```bash
-cargo test
-```
-
-### Build
-
-```bash
-cargo build --release
-```
-
-### Project Structure
-
-```
-src/
-├── lib.rs          # Library entry point
-├── main.rs         # CLI entry point
-├── version.rs      # Version parsing and comparison
-├── detector.rs     # PHP installation detection
-├── config.rs       # Configuration management
-├── switcher.rs     # Version switching logic
-└── platform/       # Platform-specific code
-    ├── mod.rs
-    ├── linux.rs
-    └── macos.rs
-```
-
-## Configuration
-
-Configuration is stored in `~/.php-switcher/config.toml`:
-
-```toml
-[settings]
-last_scan = "2025-10-23T12:00:00Z"
-default_version = "8.2"
-
-[[versions]]
-version = "8.4.13"
-path = "/usr/bin/php"
-source = "auto"
-
-[[versions]]
-version = "8.2.12"
-path = "/usr/bin/php8.2"
-source = "auto"
-```
-
-## Future Enhancements
-
-- [ ] Per-project PHP version files (`.php-version`)
-- [ ] Auto-installation of PHP versions
-- [ ] Shell prompt integration
-- [ ] Extension management
-- [ ] Windows support
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- **Linux**: Tested on Fedora 42

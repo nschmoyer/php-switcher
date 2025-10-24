@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use php_switcher::{config, detector};
+use php_switcher::{config, detector, hints, platform};
 
 #[derive(Parser)]
 #[command(name = "php-switcher")]
@@ -146,21 +146,53 @@ fn switch_version(version_pattern: &str) -> Result<()> {
     println!("Switching to PHP {}...", version_pattern.bold());
 
     // Load config
-    let config = config::load_config()?;
+    let mut config = config::load_config()?;
 
-    // Find matching version (returns all paths)
-    let paths = config
-        .get_installation_by_version(version_pattern)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No PHP installation found matching '{}'\nRun 'php-switcher list' to see available versions",
-                version_pattern
-            )
-        })?;
+    // Try to find matching version in cache
+    let mut paths = config.get_installation_by_version(version_pattern);
 
-    if paths.is_empty() {
-        return Err(anyhow::anyhow!("No PHP binaries found for version {}", version_pattern));
+    // If not found, auto-scan the system
+    if paths.is_none() {
+        println!(
+            "{}",
+            format!("PHP {} not found in cache, scanning system...", version_pattern)
+                .yellow()
+        );
+
+        let installations = detector::find_all_php_installations()?;
+
+        if installations.is_empty() {
+            println!("{}", "No PHP installations found on system.".red());
+            let detected_platform = platform::Platform::detect();
+            hints::show_installation_hints(version_pattern, detected_platform);
+            return Err(anyhow::anyhow!("No PHP installations found"));
+        }
+
+        // Update config with newly found installations
+        config.update_from_installations(&installations);
+        config::save_config(&config)?;
+
+        println!("{} Scan complete, found {} installation(s)",
+            "✓".green(),
+            installations.len()
+        );
+
+        // Try to find the version again
+        paths = config.get_installation_by_version(version_pattern);
     }
+
+    // If still not found after scanning, show installation hints
+    let paths = match paths {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            let detected_platform = platform::Platform::detect();
+            hints::show_installation_hints(version_pattern, detected_platform);
+            return Err(anyhow::anyhow!(
+                "PHP {} not found. Please install it and try again.",
+                version_pattern
+            ));
+        }
+    };
 
     // Get primary path for verification
     let primary_path = paths

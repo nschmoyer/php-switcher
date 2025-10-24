@@ -3,3 +3,4 @@ pub mod detector;
 pub mod config;
 pub mod switcher;
 pub mod platform;
+pub mod hints;

@@ -23,11 +23,13 @@ sudo cp target/release/php-switcher /usr/local/bin/
 
 ### One-time Setup
 
-Add the php-switcher bin directory to your PATH by adding this to your `~/.bashrc` or `~/.zshrc`:
+**IMPORTANT:** Add the php-switcher bin directory to the **beginning** of your PATH by adding this to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 export PATH="$HOME/.php-switcher/bin:$PATH"
 ```
+
+This ensures that `~/.php-switcher/bin/php` is found before system PHP installations.
 
 Then reload your shell:
 

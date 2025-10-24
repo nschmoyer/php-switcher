@@ -198,14 +198,10 @@ fn get_bin_dir() -> Result<PathBuf> {
 fn show_path_instructions(bin_dir: &Path) {
     println!(
         "\n{}",
-        format!(
-            "Add {} to your PATH to use the new version:",
-            bin_dir.display()
-        )
-        .yellow()
+        "IMPORTANT: Ensure the switcher bin directory is first in your PATH:".yellow()
     );
     println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
-    println!("\nOr add this to your ~/.bashrc or ~/.zshrc");
+    println!("\nAdd this to your ~/.bashrc or ~/.zshrc and run: source ~/.bashrc");
 }
 
 #[cfg(test)]

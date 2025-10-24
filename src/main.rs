@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use php_switcher::{config, detector, hints, platform};
+use php_switcher::{config, detector, switcher};
 
 #[derive(Parser)]
 #[command(name = "php-switcher")]
@@ -36,12 +36,12 @@ fn main() -> Result<()> {
 
     // Handle shorthand: php-switcher 8.2 -> php-switcher use 8.2
     if let Some(version) = cli.php_version {
-        return switch_version(&version);
+        return switcher::switch_version(&version);
     }
 
     match cli.command {
         Some(Commands::List) | None => list_versions()?,
-        Some(Commands::Use { version }) => switch_version(&version)?,
+        Some(Commands::Use { version }) => switcher::switch_version(&version)?,
         Some(Commands::Scan) => scan_installations()?,
         Some(Commands::Info { version }) => show_info(version.as_deref())?,
     }
@@ -138,125 +138,6 @@ fn list_versions() -> Result<()> {
     }
 
     println!("\n{}", "Use 'php-switcher use <version>' to switch versions".dimmed());
-
-    Ok(())
-}
-
-fn switch_version(version_pattern: &str) -> Result<()> {
-    println!("Switching to PHP {}...", version_pattern.bold());
-
-    // Load config
-    let mut config = config::load_config()?;
-
-    // Try to find matching version in cache
-    let mut paths = config.get_installation_by_version(version_pattern);
-
-    // If not found, auto-scan the system
-    if paths.is_none() {
-        println!(
-            "{}",
-            format!("PHP {} not found in cache, scanning system...", version_pattern)
-                .yellow()
-        );
-
-        let installations = detector::find_all_php_installations()?;
-
-        if installations.is_empty() {
-            println!("{}", "No PHP installations found on system.".red());
-            let detected_platform = platform::Platform::detect();
-            hints::show_installation_hints(version_pattern, detected_platform);
-            return Err(anyhow::anyhow!("No PHP installations found"));
-        }
-
-        // Update config with newly found installations
-        config.update_from_installations(&installations);
-        config::save_config(&config)?;
-
-        println!("{} Scan complete, found {} installation(s)",
-            "✓".green(),
-            installations.len()
-        );
-
-        // Try to find the version again
-        paths = config.get_installation_by_version(version_pattern);
-    }
-
-    // If still not found after scanning, show installation hints
-    let paths = match paths {
-        Some(p) if !p.is_empty() => p,
-        _ => {
-            let detected_platform = platform::Platform::detect();
-            hints::show_installation_hints(version_pattern, detected_platform);
-            return Err(anyhow::anyhow!(
-                "PHP {} not found. Please install it and try again.",
-                version_pattern
-            ));
-        }
-    };
-
-    // Get primary path for verification
-    let primary_path = paths
-        .iter()
-        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some("php"))
-        .or_else(|| paths.first())
-        .ok_or_else(|| anyhow::anyhow!("No primary PHP binary found"))?;
-
-    println!("{} Found PHP at: {}", "✓".green(), primary_path.display());
-    println!("  {} related binaries to symlink", paths.len());
-
-    // Create symlink directory
-    let switcher_dir = config::get_config_dir()?;
-    let bin_dir = switcher_dir.join("bin");
-    std::fs::create_dir_all(&bin_dir)?;
-
-    // Create symlinks for all related binaries
-    let mut symlink_count = 0;
-    for path in &paths {
-        if let Some(filename) = path.file_name() {
-            let symlink_path = bin_dir.join(filename);
-
-            // Remove existing symlink if it exists
-            if symlink_path.exists() || symlink_path.symlink_metadata().is_ok() {
-                std::fs::remove_file(&symlink_path).ok(); // Ignore errors
-            }
-
-            // Create symlink
-            #[cfg(unix)]
-            {
-                std::os::unix::fs::symlink(path, &symlink_path)?;
-            }
-
-            symlink_count += 1;
-            println!(
-                "  {} {} → {}",
-                "✓".green(),
-                filename.to_string_lossy().dimmed(),
-                path.display().to_string().dimmed()
-            );
-        }
-    }
-
-    // Verify the switch using the primary binary
-    let primary_symlink = bin_dir.join("php");
-    if primary_symlink.exists() {
-        if let Ok(version) = detector::get_version_from_binary(&primary_symlink) {
-            println!("\n{} Verified: {}", "✓".green(), version.to_string().bold());
-        }
-    }
-
-    println!("\n{}", "PHP version switched successfully!".green().bold());
-    println!("  {} symlinks created", symlink_count);
-
-    println!(
-        "\n{}",
-        format!(
-            "Add {} to your PATH to use the new version:",
-            bin_dir.display()
-        )
-        .yellow()
-    );
-    println!("  export PATH=\"{}:$PATH\"", bin_dir.display());
-    println!("\nOr add this to your ~/.bashrc or ~/.zshrc");
 
     Ok(())
 }
